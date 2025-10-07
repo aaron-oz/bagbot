@@ -1,5 +1,5 @@
 
-STAKE_ON_VALIDATOR = "5G3wMP3g3d775hauwmAZioYFVZYnvw6eY46wkFy8hEWD5KP3" #Replace with the hotkey of the validator you want to stake with (copy from https://taostats.io/validators )
+STAKE_ON_VALIDATOR = "5G3wMP3g3d775hauwmAZioYFVZYnvw6eY46wkFy8hEWD5KP3" #(Opentensor Foundation by default) Replace with the hotkey of the validator you want to stake with (copy from https://taostats.io/validators )
 
 WALLET_PW = 'your_wallet_password' #Replace with your wallet's password that you entered into btcli
 WALLET_NAME = 'bagbot' #The name of the wallet created in btcli
@@ -13,13 +13,20 @@ MAX_SLIPPAGE_PERCENT_PER_BUY = 0.2 #If over this slippage %, buy trades won't ex
 # sell_lower is the lowest price that the bot will sell your alpha.  Will only sell this low if you hold near the max_alpha amount.
 # sell_upper is the highest price that the bot will sell your alpha.  Will only sell this high if you hold near almost no alpha in the subnet.
 # max_alpha is the maximum amount of alpha to buy in the subnet, the bot will not purchase more.
+# DELETE THE EXAMPLE SUBNETS BELOW AND ADD SUBNETS AS DESIRED
 SUBNET_SETTINGS = {
 # Subnet 23 settings:
-23: {'buy_lower': 0.000011,
-     'buy_upper': 0.000015,
+23: {'buy_lower':  0.000011,
+     'buy_upper':  0.000015,
      'sell_lower': 0.5,
      'sell_upper': 1,
-     'max_alpha': 10000},
+     'max_alpha':  10000},
+# Subnet 99 settings:
+99: {'buy_lower':  0.000002,
+     'buy_upper':  0.000009,
+     'sell_lower': 0.77,
+     'sell_upper': 0.99,
+     'max_alpha':  100},
 }
 
 
