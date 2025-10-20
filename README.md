@@ -32,16 +32,15 @@ Follow these steps to set up and run Bagbot:
    source .bagbotvirtualenv/bin/activate
    ```
 
-   ***Note: Bittensor CLI is compatible with python versions from 3.9.0 to 3.12.0.***
+   ***Note: At the time of writing, Bittensor CLI is compatible with python versions from 3.9.0 to 3.12.0.***
 
    Check the python version:
    ```bash
    python3 --version
    ```
-   Install compatible version on **windows**:
+   Install compatible python version and pip3 on **windows wsl**:
    ```bash
-   winget install Python.Python.3.10
-   refreshenv
+   sudo apt install python3.10
    ```
    on **MacOS**:
    ```bash
