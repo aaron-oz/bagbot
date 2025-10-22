@@ -1,7 +1,7 @@
 # Bagbot
 A bot for accumulating alpha in the Bittensor Alpha Group.
 
-> **⚠️ Warning:** Use at your own risk! There are no guarantees! Try with small amounts first!!
+> **⚠️ Warning: Use at your own risk!** There are no guarantees! Try with small amounts first!!
 
 ## Setup Instructions
 
