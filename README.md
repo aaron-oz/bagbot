@@ -3,6 +3,9 @@ A bot for accumulating alpha in the Bittensor Alpha Group.
 
 > **⚠️ Warning: Use at your own risk!** There are no guarantees! Try with small amounts first!!
 
+> [!CAUTION]
+**HIGHLY RECOMMENDED TO JOIN THE [BITTENSOR ALPHA GROUP](https://taotemplar.com/bag) FOR HELP WITH USE AND STRATEGY**
+
 ## Setup Instructions
 
 Follow these steps to set up and run Bagbot:
