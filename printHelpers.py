@@ -82,7 +82,10 @@ def print_table_rich(
     timestamp = int(time.time())
     total_stake_value = 0.0
 
-    table = Table(title="Staking Allocations", header_style="bold white on dark_blue", box=box.SIMPLE_HEAVY)
+    from datetime import datetime
+    formatted_time = datetime.fromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M:%S')
+
+    table = Table(title=f"Staking Allocations - {formatted_time}", header_style="bold white on dark_blue", box=box.SIMPLE_HEAVY)
     table.add_column("Subnet", justify="right", style="bright_cyan")
     table.add_column("Name", justify="left", style="white")
     table.add_column("Alpha", justify="right", style="magenta")
