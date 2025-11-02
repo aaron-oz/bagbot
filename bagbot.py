@@ -84,6 +84,23 @@ class BittensorUtility():
         return default_value
 
 
+    def get_all_validators(self):
+        """
+        Collect all unique validator hotkeys from global setting and per-subnet overrides.
+
+        Returns:
+            List of unique validator hotkeys to query for stake info
+        """
+        validators = {bagbot_settings.STAKE_ON_VALIDATOR}
+
+        # Check each subnet for validator overrides
+        for subnet_config in self.subnet_grids.values():
+            if 'stake_on_validator' in subnet_config:
+                validators.add(subnet_config['stake_on_validator'])
+
+        return list(validators)
+
+
     async def setupWallet(self):
         wallet_pw = bagbot_settings.WALLET_PW
 
@@ -230,13 +247,17 @@ class BittensorUtility():
 
     async def run(self):
         await self.setup()
+        await self.refresh_subnet_grid()  # Load subnet settings before first tick
 
         while True:
             self.tick += 1
             start = time.time()
             try:
                 logger.info(f'Starting tick {self.tick}')
-                await self.refresh_stats([bagbot_settings.STAKE_ON_VALIDATOR])
+                # Collect all validators (global + per-subnet overrides)
+                all_validators = self.get_all_validators()
+                logger.info(f'Querying stake info for validators: {all_validators}')
+                await self.refresh_stats(all_validators)
 
                 logger.info(f'Tick {self.tick}: Printing table')
                 printHelpers.print_table_rich(self, console, self.current_stake_info, list(bagbot_settings.SUBNET_SETTINGS.keys()), self.stats, self.balance, self.subnet_grids)

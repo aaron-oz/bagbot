@@ -101,7 +101,12 @@ def print_table_rich(
     table.add_column("Sell Upper", justify="right", style="grey66")
     table.add_column("Price Proximity", justify="right", style="white")
 
-    for netuid in stake_info[bagbot_settings.STAKE_ON_VALIDATOR]:
+    # Collect all unique subnet IDs across all validators
+    all_netuids = set()
+    for hotkey in stake_info:
+        all_netuids.update(stake_info[hotkey].keys())
+
+    for netuid in all_netuids:
         stake_amt = botInstance.my_current_stake(netuid)
 
         if netuid in stats:
