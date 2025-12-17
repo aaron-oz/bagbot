@@ -689,7 +689,7 @@ class BittensorUtility():
                         rate_tolerance=sellTrade['max_slippage'],
                         wait_for_inclusion=True,
                         wait_for_finalization=False,
-                        safe_staking=True,
+                        safe_unstaking=True,
                         allow_partial_stake=False
                     ),
                     timeout=60.0
