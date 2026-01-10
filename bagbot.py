@@ -12,6 +12,7 @@ from bittensor.core.async_subtensor import get_async_subtensor
 import async_substrate_interface
 
 import printHelpers
+import price_history
 from decimal import Decimal, getcontext
 getcontext().prec = 16 #Precision for price stuff
 
@@ -387,6 +388,9 @@ class BittensorUtility():
                 tickLog.append( f'sn{subnet_netuid}: {rao_to_tao(self.current_stake_info[hotkey][subnet_netuid].stake.rao):.1f}' )
 
         logger.info('{' + f'wallet_value:"{sumStakedValue:.2f} + {self.balance:.2f}", ' + ', '.join(tickLog) + '}')
+
+        # Record prices for historical tracking
+        price_history.record_prices(self.stats)
 
 
 

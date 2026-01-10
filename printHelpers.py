@@ -4,6 +4,7 @@ from rich.table import Table
 from rich.panel import Panel
 from rich import box
 import bagbot_settings
+import price_history
 
 def price_proximity_bar(buyprice, sellprice, currentprice, bar_width=20):
     """
@@ -66,6 +67,17 @@ def price_proximity_bar(buyprice, sellprice, currentprice, bar_width=20):
 
     return bar_str
 
+
+def get_price_arrow(netuid, current_price, hours_ago):
+    """Get a colored arrow indicating price direction."""
+    direction = price_history.get_price_change(netuid, current_price, hours_ago)
+    if direction == 1:
+        return "[green]↑[/green]"
+    elif direction == -1:
+        return "[red]↓[/red]"
+    return "-"
+
+
 def print_table_rich(
     botInstance,
     console,
@@ -92,6 +104,10 @@ def print_table_rich(
     table.add_column("Max Alpha", justify="right", style="magenta")
     table.add_column("% Filled", justify="right", style="magenta")
     table.add_column("TAO Value", justify="right", style="yellow")
+    table.add_column("H", justify="center", style="white")
+    table.add_column("D", justify="center", style="white")
+    table.add_column("W", justify="center", style="white")
+    table.add_column("M", justify="center", style="white")
     table.add_column("Buy Lower", justify="right", style="grey66")
     table.add_column("Curr Buy", justify="right", style="bright_green")
     table.add_column("Buy Upper", justify="right", style="grey66")
@@ -176,6 +192,10 @@ def print_table_rich(
             f"{max_stake_str}",
             f"{stake_perc_filled}",
             f"{stake_value:.2f}",
+            get_price_arrow(netuid, price, 1),      # H (1 hour)
+            get_price_arrow(netuid, price, 24),     # D (24 hours)
+            get_price_arrow(netuid, price, 168),    # W (7 days)
+            get_price_arrow(netuid, price, 720),    # M (30 days)
             f"{low_buy}",
             f"{buy_threshold}",
             f"{high_buy}",

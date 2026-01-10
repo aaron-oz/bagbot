@@ -47,3 +47,4 @@ Thumbs.db
 .wallet_pw
 settings_overrides.py
 bagbot_settings_overrides.py
+price_history.json

@@ -2,6 +2,12 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Virtual Environment
+
+**Use this venv for all commands:** `../venvs/bagbot-venv`
+
+Activate with: `source ../venvs/bagbot-venv/bin/activate`
+
 ## Project Overview
 
 Bagbot is an automated trading bot for the Bittensor network that executes buy/sell strategies for subnet alpha tokens. The bot monitors subnet prices against configurable thresholds and executes stake/unstake operations through a validator hotkey.
