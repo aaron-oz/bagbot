@@ -69,13 +69,15 @@ def price_proximity_bar(buyprice, sellprice, currentprice, bar_width=20):
 
 
 def get_price_arrow(netuid, current_price, hours_ago):
-    """Get a colored arrow indicating price direction."""
-    direction = price_history.get_price_change(netuid, current_price, hours_ago)
-    if direction == 1:
-        return "[green]↑[/green]"
-    elif direction == -1:
-        return "[red]↓[/red]"
-    return "-"
+    """Get a colored value indicating price change."""
+    diff = price_history.get_price_change(netuid, current_price, hours_ago)
+    if diff is None:
+        return "-"
+    if diff > 0:
+        return f"[green]{diff:.1f}[/green]"
+    elif diff < 0:
+        return f"[red]{diff:.1f}[/red]"
+    return f"{diff:.1f}"
 
 
 def print_table_rich(

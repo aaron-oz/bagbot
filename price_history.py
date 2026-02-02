@@ -49,9 +49,7 @@ def get_price_change(netuid, current_price, hours_ago, window_hours=None):
         window_hours: Size of averaging window (defaults to hours_ago for matching windows)
 
     Returns:
-        1 if price went up
-        -1 if price went down
-        0 if no data or unchanged
+        Float difference (current_price - avg_price), or None if no data.
     """
     if window_hours is None:
         window_hours = hours_ago
@@ -60,7 +58,7 @@ def get_price_change(netuid, current_price, hours_ago, window_hours=None):
     key = str(netuid)
 
     if key not in history or not history[key]:
-        return 0
+        return None
 
     now = int(time.time())
     window_start = now - ((hours_ago + window_hours) * 3600)
@@ -71,12 +69,8 @@ def get_price_change(netuid, current_price, hours_ago, window_hours=None):
     window_prices = [e["p"] for e in entries if window_start <= e["t"] <= window_end]
 
     if not window_prices:
-        return 0
+        return None
 
     avg_price = sum(window_prices) / len(window_prices)
 
-    if current_price > avg_price:
-        return 1
-    elif current_price < avg_price:
-        return -1
-    return 0
+    return current_price - avg_price
