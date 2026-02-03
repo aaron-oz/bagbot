@@ -123,6 +123,8 @@ class BittensorUtility():
         self.current_stake_info = {}
         self.tick = 0
         self.gridLoaded = False
+        self._cached_validators = None
+        self._validator_cache_tick = 0
 
 
     def get_subnet_setting(self, subnet_netuid, setting_name, default_value):
@@ -368,9 +370,12 @@ class BittensorUtility():
             logger.error(traceback.format_exc())
             raise
 
-        for hotkey in hotkeys:
-            logger.info(f'Fetching stake info for {hotkey}')
-            self.current_stake_info[hotkey] = await self.get_stake_for_hotkey(hotkey)
+        logger.info(f'Fetching stake info for {len(hotkeys)} hotkeys in parallel')
+        stake_results = await asyncio.gather(
+            *(self.get_stake_for_hotkey(hotkey) for hotkey in hotkeys)
+        )
+        for hotkey, result in zip(hotkeys, stake_results):
+            self.current_stake_info[hotkey] = result
 
         logger.info('Fetching wallet balance')
         self.balance = float(await asyncio.wait_for(
@@ -403,15 +408,21 @@ class BittensorUtility():
             start = time.time()
             try:
                 logger.info(f'Starting tick {self.tick}')
-                # Try to discover ALL validators with stake from blockchain
-                discovered_validators = await self.discover_all_validators_with_stake()
+                # Discover validators from blockchain, but cache to avoid querying every tick
+                VALIDATOR_CACHE_TICKS = 50  # Re-query every ~10 minutes
+                if self._cached_validators is None or (self.tick - self._validator_cache_tick) >= VALIDATOR_CACHE_TICKS:
+                    discovered_validators = await self.discover_all_validators_with_stake()
+                    if discovered_validators:
+                        self._cached_validators = discovered_validators
+                        self._validator_cache_tick = self.tick
+                        logger.info(f'Refreshed validator cache from blockchain: {self._cached_validators}')
+                    else:
+                        logger.info('Validator discovery returned nothing, using configured validators')
 
-                if discovered_validators:
-                    # Use discovered validators for comprehensive stake info
-                    all_validators = discovered_validators
-                    logger.info(f'Using discovered validators for stake queries: {all_validators}')
+                if self._cached_validators:
+                    all_validators = self._cached_validators
+                    logger.info(f'Using cached validators for stake queries: {all_validators}')
                 else:
-                    # Fall back to configured validators only
                     all_validators = self.get_all_validators()
                     logger.info(f'Using configured validators for stake queries: {all_validators}')
 
@@ -466,11 +477,6 @@ class BittensorUtility():
                     pass
                 self.sub = await my_async_subtensor("finney")
                 await asyncio.sleep(3)
-            finally:
-                try:
-                    await self.sub.close()
-                except asyncio.exceptions.TimeoutError:
-                    logger.error('Closing subtensor timeout')
 
 
     def determine_buy_at_for_amount(self, subnet_settings, alpha_amount):

@@ -5,17 +5,26 @@ from pathlib import Path
 HISTORY_FILE = Path(__file__).parent / "price_history.json"
 MAX_AGE_DAYS = 32  # Keep slightly more than a month
 
+# In-memory cache so we don't re-read/parse the 100+ MB JSON file on every call
+_cache = None
+
 
 def _load_history():
+    global _cache
+    if _cache is not None:
+        return _cache
     if HISTORY_FILE.exists():
         try:
-            return json.loads(HISTORY_FILE.read_text())
+            _cache = json.loads(HISTORY_FILE.read_text())
+            return _cache
         except (json.JSONDecodeError, IOError):
             return {}
     return {}
 
 
 def _save_history(data):
+    global _cache
+    _cache = data
     HISTORY_FILE.write_text(json.dumps(data))
 
 
@@ -49,7 +58,8 @@ def get_price_change(netuid, current_price, hours_ago, window_hours=None):
         window_hours: Size of averaging window (defaults to hours_ago for matching windows)
 
     Returns:
-        Float difference (current_price - avg_price), or None if no data.
+        Tuple (diff, avg_price) where diff = current_price - avg_price,
+        or (None, None) if no data.
     """
     if window_hours is None:
         window_hours = hours_ago
@@ -58,7 +68,7 @@ def get_price_change(netuid, current_price, hours_ago, window_hours=None):
     key = str(netuid)
 
     if key not in history or not history[key]:
-        return None
+        return None, None
 
     now = int(time.time())
     window_start = now - ((hours_ago + window_hours) * 3600)
@@ -69,8 +79,8 @@ def get_price_change(netuid, current_price, hours_ago, window_hours=None):
     window_prices = [e["p"] for e in entries if window_start <= e["t"] <= window_end]
 
     if not window_prices:
-        return None
+        return None, None
 
     avg_price = sum(window_prices) / len(window_prices)
 
-    return current_price - avg_price
+    return current_price - avg_price, avg_price
