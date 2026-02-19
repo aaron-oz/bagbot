@@ -68,16 +68,32 @@ def price_proximity_bar(buyprice, sellprice, currentprice, bar_width=20):
     return bar_str
 
 
+def _fmt_price_diff(diff):
+    """Format a price difference with enough decimals to show meaningful digits."""
+    abs_diff = abs(diff)
+    if abs_diff == 0:
+        return "0.0"
+    if abs_diff >= 1:
+        return f"{diff:.1f}"
+    # Find first significant digit and show 1 decimal after it
+    import math
+    digits_after_dot = -math.floor(math.log10(abs_diff))
+    precision = digits_after_dot + 1
+    return f"{diff:.{precision}f}"
+
+
 def get_price_arrow(netuid, current_price, hours_ago):
-    """Get a colored value indicating price change."""
-    diff = price_history.get_price_change(netuid, current_price, hours_ago)
-    if diff is None:
+    """Get a colored percentage showing alpha price change over the given window."""
+    diff, avg_price = price_history.get_price_change(netuid, current_price, hours_ago)
+    if diff is None or avg_price == 0:
         return "-"
-    if diff > 0:
-        return f"[green]{diff:.1f}[/green]"
-    elif diff < 0:
-        return f"[red]{diff:.1f}[/red]"
-    return f"{diff:.1f}"
+    pct = (diff / avg_price) * 100
+    formatted = f"{pct:+.1f}%"
+    if pct > 0:
+        return f"[green]{formatted}[/green]"
+    elif pct < 0:
+        return f"[red]{formatted}[/red]"
+    return formatted
 
 
 def print_table_rich(
@@ -106,18 +122,22 @@ def print_table_rich(
     table.add_column("Max Alpha", justify="right", style="magenta")
     table.add_column("% Filled", justify="right", style="magenta")
     table.add_column("TAO Value", justify="right", style="yellow")
-    table.add_column("H", justify="center", style="white")
-    table.add_column("D", justify="center", style="white")
-    table.add_column("W", justify="center", style="white")
-    table.add_column("M", justify="center", style="white")
+    table.add_column("H", justify="right", style="white")
+    table.add_column("D", justify="right", style="white")
+    table.add_column("W", justify="right", style="white")
+    table.add_column("M", justify="right", style="white")
     table.add_column("Buy Lower", justify="right", style="grey66")
     table.add_column("Curr Buy", justify="right", style="bright_green")
     table.add_column("Buy Upper", justify="right", style="grey66")
-    table.add_column("Price", justify="right", style="bright_cyan")
+    table.add_column("Price", justify="left", style="bright_cyan")
     table.add_column("Sell Lower", justify="right", style="grey66")
     table.add_column("Curr Sell", justify="right", style="bright_red")
     table.add_column("Sell Upper", justify="right", style="grey66")
     table.add_column("Price Proximity", justify="right", style="white")
+
+    # Accumulators for average H/D/W/M percentage changes
+    total_pct = {1: 0.0, 24: 0.0, 168: 0.0, 720: 0.0}
+    total_pct_count = {1: 0, 24: 0, 168: 0, 720: 0}
 
     # Collect all unique subnet IDs across all validators
     all_netuids = set()
@@ -145,6 +165,14 @@ def print_table_rich(
 
         stake_value = stake_amt * price
         total_stake_value += stake_value
+
+        # Accumulate H/D/W/M percentage changes
+        for hours in (1, 24, 168, 720):
+            diff, avg_price = price_history.get_price_change(netuid, price, hours)
+            if diff is not None and avg_price != 0:
+                total_pct[hours] += (diff / avg_price) * 100
+                total_pct_count[hours] += 1
+
         prox_bar = ''
         try:
             if buy_threshold is not None and sell_threshold is not None:
@@ -208,10 +236,18 @@ def print_table_rich(
             f"{prox_bar}"
         )
 
+    def _fmt_change(hours, label):
+        if total_pct_count[hours] == 0:
+            return f"[bold white]{label}:[/bold white] -"
+        avg = total_pct[hours] / total_pct_count[hours]
+        color = "green" if avg >= 0 else "red"
+        return f"[bold white]{label}:[/bold white] [{color}]{avg:+.1f}%[/{color}]"
+
     summary = (
         f"[bold green]Total:[/bold green] {balance+total_stake_value:.2f} TAO    "
         f"[bold cyan]Available:[/bold cyan] {balance:.4f} TAO    "
-        f"[bold cyan]Stake Value:[/bold cyan] {total_stake_value:.4f} TAO"
+        f"[bold cyan]Stake Value:[/bold cyan] {total_stake_value:.4f} TAO    "
+        f"{_fmt_change(1, 'H')}  {_fmt_change(24, 'D')}  {_fmt_change(168, 'W')}  {_fmt_change(720, 'M')}"
     )
     console.print(Panel(summary, style="bold white"))
     console.print(table)
