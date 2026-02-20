@@ -13,6 +13,7 @@ import async_substrate_interface
 
 import printHelpers
 import price_history
+import trade_history
 from decimal import Decimal, getcontext
 getcontext().prec = 16 #Precision for price stuff
 
@@ -397,6 +398,27 @@ class BittensorUtility():
         # Record prices for historical tracking
         price_history.record_prices(self.stats)
 
+        # Record position snapshots for delta-pnl tracking
+        try:
+            cost_bases = trade_history.get_all_cost_bases()
+            snapshot_entries = []
+            for hotkey in self.current_stake_info:
+                for subnet_netuid in self.current_stake_info[hotkey]:
+                    stake_obj = self.current_stake_info[hotkey].get(subnet_netuid)
+                    alpha = float(stake_obj.stake) if stake_obj else 0.0
+                    if alpha == 0 and subnet_netuid not in cost_bases:
+                        continue
+                    price = self.stats.get(subnet_netuid, {}).get('price', 0.0)
+                    invested = cost_bases.get(subnet_netuid, {}).get('total_tao_invested', 0.0)
+                    snapshot_entries.append((subnet_netuid, alpha, price, invested))
+            if snapshot_entries:
+                trade_history.record_snapshots_bulk(snapshot_entries)
+            # Periodic cleanup (every 100 ticks)
+            if self.tick % 100 == 0:
+                trade_history.cleanup_old_snapshots()
+        except Exception as e:
+            logger.error(f"Failed to record position snapshots: {e}")
+
 
 
     async def run(self):
@@ -678,8 +700,18 @@ class BittensorUtility():
                     timeout=45.0
                 )
                 print(f'after buy {str(buyTrade)}')
-                if stake_result is True:
+                if stake_result is True or (hasattr(stake_result, 'success') and stake_result.success):
                     logger.info(f"Staked {float(buyTrade['tao_amount'])} TAO to subnet {buyTrade['netuid']} ({str(stake_result)})")
+                    try:
+                        price = self.stats[buyTrade['netuid']]['price']
+                        alpha_est = float(buyTrade['tao_amount']) / price if price > 0 else 0.0
+                        trade_history.record_trade(
+                            'buy', buyTrade['netuid'], float(buyTrade['tao_amount']),
+                            alpha_est, price, float(buyTrade['calculated_slippage']),
+                            buyTrade['hotkey']
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to record buy trade: {e}")
                 else:
                     logger.info(f"Failed to stake {float(buyTrade['tao_amount'])} TAO to subnet {buyTrade['netuid']} ({str(stake_result)})")
             except asyncio.TimeoutError:
@@ -708,8 +740,18 @@ class BittensorUtility():
                     timeout=60.0
                 )
                 print(f'after sell {str(sellTrade)}')
-                if unstake_result is True:
+                if unstake_result is True or (hasattr(unstake_result, 'success') and unstake_result.success):
                     logger.info(f"Unstaked {float(sellTrade['alpha_amount'])} stake units from sn{sellTrade['netuid']} (approx. {sellTrade['approx_tao']:.4f} TAO value) at price: {self.stats[subnet_netuid]['price']}.  my threshold = {sellTrade['sell_threshold']}")
+                    try:
+                        price = self.stats[subnet_netuid]['price']
+                        trade_history.record_trade(
+                            'sell', sellTrade['netuid'], sellTrade['approx_tao'],
+                            float(sellTrade['alpha_amount']), price,
+                            float(sellTrade['calculated_slippage']),
+                            sellTrade['hotkey']
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to record sell trade: {e}")
                 else:
                     logger.info(f"Failed to unstake {str(sellTrade)}  sn{subnet_netuid} ({str(unstake_result)})")
             except asyncio.TimeoutError:

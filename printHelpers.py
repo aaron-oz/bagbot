@@ -5,6 +5,7 @@ from rich.panel import Panel
 from rich import box
 import bagbot_settings
 import price_history
+import trade_history
 
 def price_proximity_bar(buyprice, sellprice, currentprice, bar_width=20):
     """
@@ -96,6 +97,24 @@ def get_price_arrow(netuid, current_price, hours_ago):
     return formatted
 
 
+def _fmt_delta_pnl(delta, pct):
+    """Format a delta-pnl value as colored TAO with percentage."""
+    if delta is None:
+        return "-"
+    color = "green" if delta >= 0 else "red"
+    # Show TAO amount with adaptive precision
+    abs_d = abs(delta)
+    if abs_d >= 1:
+        tao_str = f"{delta:+.2f}"
+    elif abs_d >= 0.01:
+        tao_str = f"{delta:+.3f}"
+    else:
+        tao_str = f"{delta:+.4f}"
+    if pct is not None:
+        return f"[{color}]{tao_str} ({pct:+.1f}%)[/{color}]"
+    return f"[{color}]{tao_str}[/{color}]"
+
+
 def print_table_rich(
     botInstance,
     console,
@@ -126,6 +145,9 @@ def print_table_rich(
     table.add_column("D", justify="right", style="white")
     table.add_column("W", justify="right", style="white")
     table.add_column("M", justify="right", style="white")
+    table.add_column("\u0394 1h", justify="right", style="white")
+    table.add_column("\u0394 1d", justify="right", style="white")
+    table.add_column("\u0394 1w", justify="right", style="white")
     table.add_column("Buy Lower", justify="right", style="grey66")
     table.add_column("Curr Buy", justify="right", style="bright_green")
     table.add_column("Buy Upper", justify="right", style="grey66")
@@ -134,6 +156,19 @@ def print_table_rich(
     table.add_column("Curr Sell", justify="right", style="bright_red")
     table.add_column("Sell Upper", justify="right", style="grey66")
     table.add_column("Price Proximity", justify="right", style="white")
+
+    # Load delta-pnl data for all windows
+    try:
+        deltas_1h = trade_history.get_all_pnl_deltas(1)
+        deltas_1d = trade_history.get_all_pnl_deltas(24)
+        deltas_1w = trade_history.get_all_pnl_deltas(168)
+    except Exception:
+        deltas_1h, deltas_1d, deltas_1w = {}, {}, {}
+
+    # Accumulators for portfolio-wide delta-pnl
+    total_delta = {1: 0.0, 24: 0.0, 168: 0.0}
+    total_delta_invested = {1: 0.0, 24: 0.0, 168: 0.0}
+    total_delta_count = {1: 0, 24: 0, 168: 0}
 
     # Accumulators for average H/D/W/M percentage changes
     total_pct = {1: 0.0, 24: 0.0, 168: 0.0, 720: 0.0}
@@ -172,6 +207,21 @@ def print_table_rich(
             if diff is not None and avg_price != 0:
                 total_pct[hours] += (diff / avg_price) * 100
                 total_pct_count[hours] += 1
+
+        # Delta-pnl columns
+        d1h = deltas_1h.get(netuid)
+        d1d = deltas_1d.get(netuid)
+        d1w = deltas_1w.get(netuid)
+        delta_1h_str = _fmt_delta_pnl(*d1h) if d1h else "-"
+        delta_1d_str = _fmt_delta_pnl(*d1d) if d1d else "-"
+        delta_1w_str = _fmt_delta_pnl(*d1w) if d1w else "-"
+
+        # Accumulate portfolio-wide deltas
+        for hours, deltas in [(1, deltas_1h), (24, deltas_1d), (168, deltas_1w)]:
+            if netuid in deltas:
+                delta, pct = deltas[netuid]
+                total_delta[hours] += delta
+                total_delta_count[hours] += 1
 
         prox_bar = ''
         try:
@@ -226,6 +276,9 @@ def print_table_rich(
             get_price_arrow(netuid, price, 24),     # D (24 hours)
             get_price_arrow(netuid, price, 168),    # W (7 days)
             get_price_arrow(netuid, price, 720),    # M (30 days)
+            delta_1h_str,
+            delta_1d_str,
+            delta_1w_str,
             f"{low_buy}",
             f"{buy_threshold}",
             f"{high_buy}",
@@ -243,13 +296,19 @@ def print_table_rich(
         color = "green" if avg >= 0 else "red"
         return f"[bold white]{label}:[/bold white] [{color}]{avg:+.1f}%[/{color}]"
 
+    def _fmt_total_delta(hours, label):
+        if total_delta_count[hours] == 0:
+            return f"[bold white]{label}:[/bold white] -"
+        d = total_delta[hours]
+        color = "green" if d >= 0 else "red"
+        return f"[bold white]{label}:[/bold white] [{color}]{d:+.4f}[/{color}]"
+
     summary = (
         f"[bold green]Total:[/bold green] {balance+total_stake_value:.2f} TAO    "
         f"[bold cyan]Available:[/bold cyan] {balance:.4f} TAO    "
         f"[bold cyan]Stake Value:[/bold cyan] {total_stake_value:.4f} TAO    "
-        f"{_fmt_change(1, 'H')}  {_fmt_change(24, 'D')}  {_fmt_change(168, 'W')}  {_fmt_change(720, 'M')}"
+        f"{_fmt_change(1, 'H')}  {_fmt_change(24, 'D')}  {_fmt_change(168, 'W')}  {_fmt_change(720, 'M')}    "
+        f"{_fmt_total_delta(1, '\u0394 1h')}  {_fmt_total_delta(24, '\u0394 1d')}  {_fmt_total_delta(168, '\u0394 1w')}"
     )
     console.print(Panel(summary, style="bold white"))
     console.print(table)
-
-
