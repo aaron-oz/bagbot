@@ -5,6 +5,10 @@ STAKE_ON_VALIDATOR = "5G3wMP3g3d775hauwmAZioYFVZYnvw6eY46wkFy8hEWD5KP3" #(Opente
 WALLET_PW = 'your_wallet_password' #Replace with your wallet's password that you entered into btcli
 WALLET_NAME = 'bagbot' #The name of the wallet created in btcli
 
+# Proxy wallet config (set these in overrides to enable proxy-based trading via Ledger)
+PROXY_WALLET_NAME = None  # e.g., 'bagbot-proxy'
+LEDGER_SS58 = None        # e.g., '5Abc...' — the Ledger account address for this bot
+
 # Note: LOWER THAN 0.01 MAY CAUSE THE BUYS TO FAIL WHILE STILL TAKING THE GAS FEE
 MAX_TAO_PER_BUY = 0.02 #May increase as desired, I wouldnt reduce it.
 MAX_TAO_PER_SELL = 0.02 #May increase as desired, I wouldnt reduce it
@@ -14,6 +18,12 @@ MAX_SLIPPAGE_PERCENT_PER_BUY = 0.2 #If over this slippage %, buy trades won't ex
 # Must be positive. Suggested range: 0.1 to 10
 BUY_ZONE_POWER = 1.0  # Power curve exponent for buy price progression
 SELL_ZONE_POWER = 1.0  # Power curve exponent for sell price progression
+
+# Telegram alerts — set in overrides to enable.  See README for setup instructions.
+# 1. Message @BotFather on Telegram → /newbot → copy the token
+# 2. Message your bot, then visit https://api.telegram.org/bot<TOKEN>/getUpdates to get your chat_id
+TELEGRAM_BOT_TOKEN = None   # e.g. '123456:ABC-DEF...'
+TELEGRAM_CHAT_ID = None     # e.g. '987654321'
 
 # buy_lower is the lowest price that the bot will allocate your max_alpha amount to.  Will only purchase this low if you hold near the max_alpha amount.
 # buy_upper is the highest price that the bot will allocate your max_alpha amount to.  Will only purchase this high if you hold no alpha in the subnet yet.

@@ -17,6 +17,31 @@ import trade_history
 from decimal import Decimal, getcontext
 getcontext().prec = 16 #Precision for price stuff
 
+# Keep enough free TAO to cover transaction fees.  Canonical constant lives
+# in bt_tools.network.executor.FEE_RESERVE_TAO — duplicated here because
+# bagbot doesn't yet import bt-tools at runtime.
+FEE_RESERVE_TAO: float = 0.01
+
+# Warn when the proxy wallet balance drops below this threshold (TAO).
+# At ~0.0014 TAO per tx this gives ~35 transactions of runway.
+PROXY_LOW_BALANCE_WARN: float = 0.05
+
+
+def _send_telegram_alert(message: str) -> None:
+    """Send a Telegram message via bot API.  Silently no-ops if not configured."""
+    token = getattr(bagbot_settings, 'TELEGRAM_BOT_TOKEN', None)
+    chat_id = getattr(bagbot_settings, 'TELEGRAM_CHAT_ID', None)
+    if not token or not chat_id:
+        return
+    import urllib.request
+    import urllib.parse
+    try:
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        data = urllib.parse.urlencode({'chat_id': chat_id, 'text': message}).encode()
+        urllib.request.urlopen(url, data, timeout=10)
+    except Exception as e:
+        logger.warning(f"Telegram alert failed: {e}")
+
 from rich.console import Console
 console = Console()
 
@@ -126,6 +151,9 @@ class BittensorUtility():
         self.gridLoaded = False
         self._cached_validators = None
         self._validator_cache_tick = 0
+        self._cycle_spent = 0.0  # TAO committed to buys within current tick
+        self.proxy_balance = None  # fetched each tick when proxy is active
+        self._proxy_warn_sent = False  # only send Telegram alert once per low-balance episode
 
 
     def get_subnet_setting(self, subnet_netuid, setting_name, default_value):
@@ -156,7 +184,7 @@ class BittensorUtility():
             # Try to get comprehensive stake info
             stake_info_list = await asyncio.wait_for(
                 self.sub.get_stake_info_for_coldkey(
-                    coldkey_ss58=self.wallet.coldkey.ss58_address
+                    coldkey_ss58=self.coldkey_ss58
                 ),
                 timeout=30.0
             )
@@ -224,13 +252,86 @@ class BittensorUtility():
 
 
     async def setupWallet(self):
-        wallet_pw = bagbot_settings.WALLET_PW
-
-        self.wallet = bt.Wallet(name=bagbot_settings.WALLET_NAME)
+        import os
+        wallet_pw = os.environ.get("BB_WALLET_PW", bagbot_settings.WALLET_PW)
+        wallet_name = bagbot_settings.PROXY_WALLET_NAME or bagbot_settings.WALLET_NAME
+        self.wallet = bt.Wallet(name=wallet_name)
         self.wallet.create_if_non_existent()
         self.wallet.coldkey_file.save_password_to_env(wallet_pw)
         self.wallet.unlock_coldkey()
+        self.coldkey_ss58 = bagbot_settings.LEDGER_SS58 or self.wallet.coldkey.ss58_address
+        self._use_proxy = bagbot_settings.PROXY_WALLET_NAME is not None
 
+
+    async def _proxy_add_stake(self, hotkey, netuid, bt_amount, rate_tolerance, timeout=45.0):
+        """Execute add_stake via proxy or directly depending on config."""
+        if self._use_proxy:
+            from bittensor.core.extrinsics.pallets import SubtensorModule
+            from bittensor.core.chain_data.proxy import ProxyType
+            call = await SubtensorModule(self.sub).add_stake(
+                netuid=netuid, hotkey=hotkey, amount_staked=bt_amount.rao,
+            )
+            return await asyncio.wait_for(
+                self.sub.proxy(
+                    wallet=self.wallet,
+                    real_account_ss58=self.coldkey_ss58,
+                    force_proxy_type=ProxyType.Staking,
+                    call=call,
+                    wait_for_inclusion=True,
+                    wait_for_finalization=False,
+                ),
+                timeout=timeout,
+            )
+        else:
+            return await asyncio.wait_for(
+                self.sub.add_stake(
+                    wallet=self.wallet,
+                    hotkey_ss58=hotkey,
+                    netuid=netuid,
+                    amount=bt_amount,
+                    rate_tolerance=rate_tolerance,
+                    wait_for_inclusion=False,
+                    wait_for_finalization=False,
+                    safe_staking=True,
+                    allow_partial_stake=False,
+                ),
+                timeout=timeout,
+            )
+
+    async def _proxy_unstake(self, hotkey, netuid, alpha_amount, rate_tolerance, timeout=60.0):
+        """Execute unstake via proxy or directly depending on config."""
+        if self._use_proxy:
+            from bittensor.core.extrinsics.pallets import SubtensorModule
+            from bittensor.core.chain_data.proxy import ProxyType
+            call = await SubtensorModule(self.sub).remove_stake(
+                netuid=netuid, hotkey=hotkey, amount_unstaked=alpha_amount.rao,
+            )
+            return await asyncio.wait_for(
+                self.sub.proxy(
+                    wallet=self.wallet,
+                    real_account_ss58=self.coldkey_ss58,
+                    force_proxy_type=ProxyType.Staking,
+                    call=call,
+                    wait_for_inclusion=True,
+                    wait_for_finalization=False,
+                ),
+                timeout=timeout,
+            )
+        else:
+            return await asyncio.wait_for(
+                self.sub.unstake(
+                    wallet=self.wallet,
+                    hotkey_ss58=hotkey,
+                    netuid=netuid,
+                    amount=alpha_amount,
+                    rate_tolerance=rate_tolerance,
+                    wait_for_inclusion=True,
+                    wait_for_finalization=False,
+                    safe_unstaking=True,
+                    allow_partial_stake=False,
+                ),
+                timeout=timeout,
+            )
 
     async def setupSubtensor(self):
         while True:
@@ -348,7 +449,7 @@ class BittensorUtility():
                 retval = await asyncio.wait_for(
                             self.sub.get_stake_for_coldkey_and_hotkey(
                                 hotkey_ss58=hotkey,
-                                coldkey_ss58=self.wallet.coldkey.ss58_address
+                                coldkey_ss58=self.coldkey_ss58
                             ),
                             timeout=20.0
                         )
@@ -380,9 +481,32 @@ class BittensorUtility():
 
         logger.info('Fetching wallet balance')
         self.balance = float(await asyncio.wait_for(
-            self.sub.get_balance(address=self.wallet.coldkey.ss58_address),
+            self.sub.get_balance(address=self.coldkey_ss58),
             timeout=20.0
         ))
+
+        # Fetch proxy wallet balance (the account that pays tx fees)
+        if self._use_proxy:
+            try:
+                proxy_ss58 = self.wallet.coldkey.ss58_address
+                self.proxy_balance = float(await asyncio.wait_for(
+                    self.sub.get_balance(address=proxy_ss58),
+                    timeout=20.0
+                ))
+                logger.info(f'Proxy wallet balance: {self.proxy_balance:.6f} TAO')
+                if self.proxy_balance < PROXY_LOW_BALANCE_WARN:
+                    logger.warning(f'PROXY WALLET LOW: {self.proxy_balance:.6f} TAO — trades will fail when this runs out!')
+                    if not self._proxy_warn_sent:
+                        _send_telegram_alert(
+                            f"⚠️ BagBot proxy wallet LOW: {self.proxy_balance:.6f} TAO\n"
+                            f"Address: {proxy_ss58}\n"
+                            f"Trades will fail when this runs out. Please top up!"
+                        )
+                        self._proxy_warn_sent = True
+                else:
+                    self._proxy_warn_sent = False  # reset once balance is healthy
+            except Exception as e:
+                logger.warning(f'Could not fetch proxy balance: {e}')
 
         sumStakedValue = 0
         tickLog = []
@@ -398,26 +522,14 @@ class BittensorUtility():
         # Record prices for historical tracking
         price_history.record_prices(self.stats)
 
-        # Record position snapshots for delta-pnl tracking
+        # Record portfolio snapshot for transfer-adjusted delta tracking
         try:
-            cost_bases = trade_history.get_all_cost_bases()
-            snapshot_entries = []
-            for hotkey in self.current_stake_info:
-                for subnet_netuid in self.current_stake_info[hotkey]:
-                    stake_obj = self.current_stake_info[hotkey].get(subnet_netuid)
-                    alpha = float(stake_obj.stake) if stake_obj else 0.0
-                    if alpha == 0 and subnet_netuid not in cost_bases:
-                        continue
-                    price = self.stats.get(subnet_netuid, {}).get('price', 0.0)
-                    invested = cost_bases.get(subnet_netuid, {}).get('total_tao_invested', 0.0)
-                    snapshot_entries.append((subnet_netuid, alpha, price, invested))
-            if snapshot_entries:
-                trade_history.record_snapshots_bulk(snapshot_entries)
+            trade_history.record_portfolio_snapshot(self.balance, sumStakedValue)
             # Periodic cleanup (every 100 ticks)
             if self.tick % 100 == 0:
                 trade_history.cleanup_old_snapshots()
         except Exception as e:
-            logger.error(f"Failed to record position snapshots: {e}")
+            logger.error(f"Failed to record portfolio snapshot: {e}")
 
 
 
@@ -451,7 +563,7 @@ class BittensorUtility():
                 await self.refresh_stats(all_validators)
 
                 logger.info(f'Tick {self.tick}: Printing table')
-                printHelpers.print_table_rich(self, console, self.current_stake_info, list(bagbot_settings.SUBNET_SETTINGS.keys()), self.stats, self.balance, self.subnet_grids)
+                printHelpers.print_table_rich(self, console, self.current_stake_info, list(bagbot_settings.SUBNET_SETTINGS.keys()), self.stats, self.balance, self.subnet_grids, proxy_balance=self.proxy_balance)
                 if self.tick == 1 and not self.args.nocheck:
                     loop = asyncio.get_event_loop()
                     user_input = await loop.run_in_executor(None, input, "Should the bot proceed? (Y/N): ")
@@ -460,8 +572,12 @@ class BittensorUtility():
                         return
 
                 logger.info(f'Tick {self.tick}: Checking trades')
-                for subnet_netuid in bagbot_settings.SUBNET_SETTINGS:
-                    await self.do_available_trades(subnet_netuid)
+                self._cycle_spent = 0.0  # reset per-tick spend tracker
+                if self._use_proxy and self.proxy_balance is not None and self.proxy_balance < FEE_RESERVE_TAO:
+                    logger.warning(f'Skipping ALL trades — proxy wallet too low ({self.proxy_balance:.6f} TAO) to cover fees')
+                else:
+                    for subnet_netuid in bagbot_settings.SUBNET_SETTINGS:
+                        await self.do_available_trades(subnet_netuid)
 
                 logging.info(f'Finished tick {self.tick} in {time.time() - start:.2f} seconds')
                 #return
@@ -611,7 +727,8 @@ class BittensorUtility():
         max_slippage = self.get_subnet_setting(subnet_netuid, 'max_slippage_percent_per_buy', bagbot_settings.MAX_SLIPPAGE_PERCENT_PER_BUY)
         hotkey = self.get_subnet_setting(subnet_netuid, 'stake_on_validator', bagbot_settings.STAKE_ON_VALIDATOR)
 
-        if self.balance > max_tao_per_buy:
+        available = self.balance - self._cycle_spent - FEE_RESERVE_TAO
+        if available > max_tao_per_buy:
 
             if subnet_netuid in self.stats and self.stats[subnet_netuid]['price'] < buy_threshold and current_stake_amt < self.subnet_grids[subnet_netuid]['max_alpha']:
                 logger.info(f'''Want to buy sn{subnet_netuid} at price {self.stats[subnet_netuid]['price']} because it's lower than my threshold: {buy_threshold}, currently have {current_stake_amt} alpha in it''')
@@ -632,7 +749,7 @@ class BittensorUtility():
                 logger.info(f"About to stake {tao_amount} to {subnet_netuid} with expected slippage of {slippage:.4f}%")
                 return trade
         else:
-            logger.info(f'Not enough balance to stake: {self.balance:.2f}')
+            logger.info(f'Not enough balance to stake: {self.balance:.2f} (available={available:.4f}, cycle_spent={self._cycle_spent:.4f}, fee_reserve={FEE_RESERVE_TAO})')
         return None
 
     def constructSell(self, subnet_netuid):
@@ -656,12 +773,14 @@ class BittensorUtility():
             hotkey = self.determineHotKey(alpha_to_sell, subnet_netuid)
             approx_tao = float(Decimal(self.stats[subnet_netuid]['price']) * Decimal(alpha_to_sell))
 
-            if approx_tao > max_tao_per_sell:
-                raise Exception(f'Stopping before selling too much. approx_tao: {approx_tao}, max tao per sell: {max_tao_per_sell}, price x alpha: {self.stats[subnet_netuid]["price"]} x {alpha_to_sell} \nTO FIX: increase the max_tao_per_sell variable or increase max_slippage_percent_per_buy')
+            if approx_tao > max_tao_per_sell * 1.001:  # 0.1% tolerance for float rounding
+                logger.warning(f'Skipping sell — approx_tao {approx_tao:.6f} exceeds max_tao_per_sell {max_tao_per_sell}. price x alpha: {self.stats[subnet_netuid]["price"]} x {alpha_to_sell}')
+                return None
 
             slippage = self.determineSlippage(alpha_to_sell, self.stats[subnet_netuid]['alpha_in'])
             if Decimal(slippage) > Decimal(max_slippage):
-                raise Exception(f'Stopping before selling too much, slippage: {Decimal(slippage)}, max slippage per buy/sell: {Decimal(max_slippage)}  \nTO FIX: increase the max_tao_per_sell variable or increase max_slippage_percent_per_buy')
+                logger.warning(f'Skipping sell sn{subnet_netuid} — slippage {slippage:.4f}% exceeds max {max_slippage}%')
+                return None
 
             logger.info(f"About to unstake {alpha_to_sell} alpha (~{approx_tao} TAO) in sn{subnet_netuid} on hotkey {hotkey} with expected slippage of {slippage:.4f}%")
 
@@ -683,21 +802,14 @@ class BittensorUtility():
 
         buyTrade = self.constructBuy(subnet_netuid)
         if buyTrade:
+            # Reserve this TAO so later subnets in the same tick don't
+            # double-spend the same balance.
+            self._cycle_spent += float(buyTrade['tao_amount'])
             try:
                 logger.info(f"Attempting to stake {float(buyTrade['tao_amount'])} TAO to subnet {buyTrade['netuid']}")
-                stake_result = await asyncio.wait_for(
-                    self.sub.add_stake(
-                        wallet=self.wallet,
-                        hotkey_ss58=buyTrade['hotkey'],
-                        netuid=buyTrade['netuid'],
-                        amount=buyTrade['tao_amount'],
-                        rate_tolerance=buyTrade['max_slippage'],
-                        wait_for_inclusion=False,
-                        wait_for_finalization=False,
-                        safe_staking=True,
-                        allow_partial_stake=False
-                    ),
-                    timeout=45.0
+                stake_result = await self._proxy_add_stake(
+                    buyTrade['hotkey'], buyTrade['netuid'],
+                    buyTrade['tao_amount'], buyTrade['max_slippage'],
                 )
                 print(f'after buy {str(buyTrade)}')
                 if stake_result is True or (hasattr(stake_result, 'success') and stake_result.success):
@@ -725,19 +837,9 @@ class BittensorUtility():
         if sellTrade:
             try:
                 logger.info(f"Attempting to unstake {float(sellTrade['alpha_amount'])} alpha from subnet {sellTrade['netuid']}")
-                unstake_result = await asyncio.wait_for(
-                    self.sub.unstake(
-                        wallet=self.wallet,
-                        hotkey_ss58=sellTrade['hotkey'] ,
-                        netuid=sellTrade['netuid'],
-                        amount=sellTrade['alpha_amount'],
-                        rate_tolerance=sellTrade['max_slippage'],
-                        wait_for_inclusion=True,
-                        wait_for_finalization=False,
-                        safe_unstaking=True,
-                        allow_partial_stake=False
-                    ),
-                    timeout=60.0
+                unstake_result = await self._proxy_unstake(
+                    sellTrade['hotkey'], sellTrade['netuid'],
+                    sellTrade['alpha_amount'], sellTrade['max_slippage'],
                 )
                 print(f'after sell {str(sellTrade)}')
                 if unstake_result is True or (hasattr(unstake_result, 'success') and unstake_result.success):

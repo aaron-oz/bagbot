@@ -105,28 +105,76 @@ class TestTradeHistory(unittest.TestCase):
         # cost_of_sold = 2.0, received = 1.0, pnl = -1.0
         self.assertAlmostEqual(basis['realized_pnl'], -1.0)
 
-
-    def test_snapshot_and_delta_pnl(self):
-        """Snapshots record position state and delta-pnl computes change."""
+    def test_portfolio_snapshot_and_delta(self):
+        """Portfolio delta tracks total bag value change minus transfers."""
         now = int(time.time())
-        # For 1h lookback: earlier window centers at now-3600, smooth=900s
-        # So earlier window is [now-4050, now-3150]
-        # Recent window is [now-900, now]
-        # Snapshot at 1h ago: 100 alpha at price 0.01, invested 0.8 → pnl = 1.0 - 0.8 = 0.2
-        trade_history.record_snapshot(10, 100.0, 0.01, 0.8, timestamp=now - 3600)
-        # Snapshot now: 100 alpha at price 0.015, invested 0.8 → pnl = 1.5 - 0.8 = 0.7
-        trade_history.record_snapshot(10, 100.0, 0.015, 0.8, timestamp=now)
-        delta, pct = trade_history.get_pnl_delta(10, 1)
-        # delta = 0.7 - 0.2 = 0.5
-        self.assertAlmostEqual(delta, 0.5)
-        # pct = 0.5 / 0.8 * 100 = 62.5%
-        self.assertAlmostEqual(pct, 62.5)
+        # For 1h lookback: earlier window centers at now-3600 (±450s)
+        # recent window = [now-900, now], trade_flow window = between them
+        # Snapshot in earlier window
+        trade_history.record_portfolio_snapshot(10.0, 90.0, timestamp=now - 3600)
+        # Snapshot in recent window
+        trade_history.record_portfolio_snapshot(8.0, 95.0, timestamp=now)
+        # Buy happened between windows (explains the balance drop)
+        trade_history.record_trade('buy', 10, 2.0, 100.0, 0.02, 0.001, 'hotkey1',
+                                   timestamp=now - 2000)
 
-    def test_delta_pnl_no_data(self):
-        """Delta-pnl returns None when no snapshots exist."""
-        delta, pct = trade_history.get_pnl_delta(99, 1)
+        delta, pct = trade_history.get_portfolio_delta(1)
+        # total_now=103, total_then=100, raw_delta=3
+        # balance_change = 8 - 10 = -2
+        # trade_flow = -2 (buy between windows)
+        # net_transfers = -2 - (-2) = 0
+        # delta = 3 - 0 = 3
+        self.assertAlmostEqual(delta, 3.0)
+        self.assertAlmostEqual(pct, 3.0)  # 3/100 * 100 = 3%
+
+    def test_portfolio_delta_with_transfer_between_windows(self):
+        """TAO transferred in between windows should be subtracted."""
+        now = int(time.time())
+        trade_history.record_portfolio_snapshot(10.0, 90.0, timestamp=now - 3600)
+        # Balance jumped by 10 between windows (transfer in)
+        trade_history.record_portfolio_snapshot(20.0, 90.0, timestamp=now)
+
+        delta, pct = trade_history.get_portfolio_delta(1)
+        # raw_delta = 110 - 100 = 10
+        # balance_change = 20 - 10 = 10, trade_flow = 0
+        # net_transfers = 10, delta = 10 - 10 = 0
+        self.assertAlmostEqual(delta, 0.0)
+
+    def test_portfolio_delta_with_transfer_out(self):
+        """TAO transferred out between windows should not count as a loss."""
+        now = int(time.time())
+        trade_history.record_portfolio_snapshot(10.0, 90.0, timestamp=now - 3600)
+        trade_history.record_portfolio_snapshot(5.0, 90.0, timestamp=now)
+
+        delta, pct = trade_history.get_portfolio_delta(1)
+        # raw_delta = -5, net_transfers = -5, delta = 0
+        self.assertAlmostEqual(delta, 0.0)
+
+    def test_portfolio_delta_trade_in_window_not_double_counted(self):
+        """Trades within an averaging window don't leak into trade_flow."""
+        now = int(time.time())
+        # Two snapshots in earlier window: pre and post buy
+        trade_history.record_portfolio_snapshot(10.0, 90.0, timestamp=now - 3700)
+        trade_history.record_portfolio_snapshot(8.0, 92.0, timestamp=now - 3500)
+        # Buy happened INSIDE the earlier window
+        trade_history.record_trade('buy', 10, 2.0, 100.0, 0.02, 0.001, 'hotkey1',
+                                   timestamp=now - 3600)
+        # Recent window
+        trade_history.record_portfolio_snapshot(8.0, 95.0, timestamp=now)
+
+        delta, pct = trade_history.get_portfolio_delta(1)
+        # The buy is within the earlier window so trade_flow between windows = 0
+        # Earlier avg: bal=9, staked=91, total=100
+        # Recent: bal=8, staked=95, total=103
+        # raw_delta=3, bal_change=-1, trade_flow=0, net_transfers=-1
+        # delta = 3 - (-1) = 4
+        self.assertIsNotNone(delta)
+        self.assertGreater(delta, 0)
+
+    def test_portfolio_delta_no_data(self):
+        """Returns None when no snapshots exist."""
+        delta, pct = trade_history.get_portfolio_delta(1)
         self.assertIsNone(delta)
-        self.assertIsNone(pct)
 
     def test_snapshots_bulk(self):
         """Bulk snapshot recording works."""
@@ -139,6 +187,23 @@ class TestTradeHistory(unittest.TestCase):
         conn = trade_history._get_conn()
         count = conn.execute("SELECT COUNT(*) FROM position_snapshots").fetchone()[0]
         self.assertEqual(count, 2)
+
+    def test_cleanup_removes_old_data(self):
+        """Cleanup removes both position and portfolio snapshots."""
+        now = int(time.time())
+        old = now - 15 * 86400  # 15 days ago
+        trade_history.record_snapshot(10, 100.0, 0.01, 0.8, timestamp=old)
+        trade_history.record_snapshot(10, 100.0, 0.02, 0.8, timestamp=now)
+        trade_history.record_portfolio_snapshot(10.0, 90.0, timestamp=old)
+        trade_history.record_portfolio_snapshot(10.0, 95.0, timestamp=now)
+
+        trade_history.cleanup_old_snapshots(max_age_days=10)
+
+        conn = trade_history._get_conn()
+        pos_count = conn.execute("SELECT COUNT(*) FROM position_snapshots").fetchone()[0]
+        port_count = conn.execute("SELECT COUNT(*) FROM portfolio_snapshots").fetchone()[0]
+        self.assertEqual(pos_count, 1)  # only recent survives
+        self.assertEqual(port_count, 1)
 
 
 if __name__ == '__main__':

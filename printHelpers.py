@@ -122,7 +122,8 @@ def print_table_rich(
     allowed_subnets: List[int],
     stats: Dict[int, Dict],
     balance: float,
-    subnet_grids: Dict[int, Dict]
+    subnet_grids: Dict[int, Dict],
+    proxy_balance: float = None,
 ):
     """
     Print a Rich table
@@ -141,15 +142,13 @@ def print_table_rich(
     table.add_column("Max Alpha", justify="right", style="magenta")
     table.add_column("% Filled", justify="right", style="magenta")
     table.add_column("TAO Value", justify="right", style="yellow")
-    table.add_column("H", justify="right", style="white")
-    table.add_column("D", justify="right", style="white")
-    table.add_column("W", justify="right", style="white")
-    table.add_column("M", justify="right", style="white")
+    table.add_column("P&L %", justify="right", style="white")
     table.add_column("\u0394 1h", justify="right", style="white")
     table.add_column("\u0394 1d", justify="right", style="white")
     table.add_column("\u0394 1w", justify="right", style="white")
     table.add_column("Buy Lower", justify="right", style="grey66")
     table.add_column("Curr Buy", justify="right", style="bright_green")
+    table.add_column("Avg Buy", justify="right", style="cyan")
     table.add_column("Buy Upper", justify="right", style="grey66")
     table.add_column("Price", justify="left", style="bright_cyan")
     table.add_column("Sell Lower", justify="right", style="grey66")
@@ -157,34 +156,42 @@ def print_table_rich(
     table.add_column("Sell Upper", justify="right", style="grey66")
     table.add_column("Price Proximity", justify="right", style="white")
 
-    # Load delta-pnl data for all windows
+    # Load cost basis data for avg buy price / P&L
     try:
-        deltas_1h = trade_history.get_all_pnl_deltas(1)
-        deltas_1d = trade_history.get_all_pnl_deltas(24)
-        deltas_1w = trade_history.get_all_pnl_deltas(168)
+        cost_bases = trade_history.get_all_cost_bases()
+    except Exception:
+        cost_bases = {}
+
+    # Per-subnet deltas: pure price movement on current holdings
+    try:
+        deltas_1h = trade_history.get_all_subnet_price_deltas(stake_info, stats, 1)
+        deltas_1d = trade_history.get_all_subnet_price_deltas(stake_info, stats, 24)
+        deltas_1w = trade_history.get_all_subnet_price_deltas(stake_info, stats, 168)
     except Exception:
         deltas_1h, deltas_1d, deltas_1w = {}, {}, {}
 
-    # Accumulators for portfolio-wide delta-pnl
-    total_delta = {1: 0.0, 24: 0.0, 168: 0.0}
-    total_delta_invested = {1: 0.0, 24: 0.0, 168: 0.0}
-    total_delta_count = {1: 0, 24: 0, 168: 0}
-
-    # Accumulators for average H/D/W/M percentage changes
-    total_pct = {1: 0.0, 24: 0.0, 168: 0.0, 720: 0.0}
-    total_pct_count = {1: 0, 24: 0, 168: 0, 720: 0}
+    # Portfolio-wide deltas: transfer-adjusted total bag change
+    try:
+        portfolio_delta_1h = trade_history.get_portfolio_delta(1)
+        portfolio_delta_1d = trade_history.get_portfolio_delta(24)
+        portfolio_delta_1w = trade_history.get_portfolio_delta(168)
+    except Exception:
+        portfolio_delta_1h = (None, None)
+        portfolio_delta_1d = (None, None)
+        portfolio_delta_1w = (None, None)
 
     # Collect all unique subnet IDs across all validators
     all_netuids = set()
     for hotkey in stake_info:
         all_netuids.update(stake_info[hotkey].keys())
 
+    row_count = 0
     for netuid in all_netuids:
         stake_amt = botInstance.my_current_stake(netuid)
 
         if netuid in stats:
             price = float(stats[netuid]["price"])
-            name = stats[netuid].get("name", "")
+            name = stats[netuid].get("name", "")[:6]
         else:
             price = 0.0
             name = ""
@@ -201,12 +208,17 @@ def print_table_rich(
         stake_value = stake_amt * price
         total_stake_value += stake_value
 
-        # Accumulate H/D/W/M percentage changes
-        for hours in (1, 24, 168, 720):
-            diff, avg_price = price_history.get_price_change(netuid, price, hours)
-            if diff is not None and avg_price != 0:
-                total_pct[hours] += (diff / avg_price) * 100
-                total_pct_count[hours] += 1
+        # Cost basis / P&L
+        basis = cost_bases.get(netuid)
+        if basis and basis['avg_buy_price'] > 0 and stake_amt > 0:
+            avg_buy = basis['avg_buy_price']
+            avg_buy_str = f"{avg_buy:.6f}"
+            pnl_pct = ((price - avg_buy) / avg_buy) * 100
+            color = "green" if pnl_pct >= 0 else "red"
+            pnl_str = f"[{color}]{pnl_pct:+.1f}%[/{color}]"
+        else:
+            avg_buy_str = "-"
+            pnl_str = "-"
 
         # Delta-pnl columns
         d1h = deltas_1h.get(netuid)
@@ -215,13 +227,6 @@ def print_table_rich(
         delta_1h_str = _fmt_delta_pnl(*d1h) if d1h else "-"
         delta_1d_str = _fmt_delta_pnl(*d1d) if d1d else "-"
         delta_1w_str = _fmt_delta_pnl(*d1w) if d1w else "-"
-
-        # Accumulate portfolio-wide deltas
-        for hours, deltas in [(1, deltas_1h), (24, deltas_1d), (168, deltas_1w)]:
-            if netuid in deltas:
-                delta, pct = deltas[netuid]
-                total_delta[hours] += delta
-                total_delta_count[hours] += 1
 
         prox_bar = ''
         try:
@@ -272,15 +277,13 @@ def print_table_rich(
             f"{max_stake_str}",
             f"{stake_perc_filled}",
             f"{stake_value:.2f}",
-            get_price_arrow(netuid, price, 1),      # H (1 hour)
-            get_price_arrow(netuid, price, 24),     # D (24 hours)
-            get_price_arrow(netuid, price, 168),    # W (7 days)
-            get_price_arrow(netuid, price, 720),    # M (30 days)
+            pnl_str,
             delta_1h_str,
             delta_1d_str,
             delta_1w_str,
             f"{low_buy}",
             f"{buy_threshold}",
+            avg_buy_str,
             f"{high_buy}",
             f"{price:.5f}{'b' if probably_buying else ''}{'s' if probably_selling else ''}",
             f"{low_sell}",
@@ -288,27 +291,34 @@ def print_table_rich(
             f"{high_sell}",
             f"{prox_bar}"
         )
+        row_count += 1
+        if row_count % 4 == 0:
+            table.add_section()
 
-    def _fmt_change(hours, label):
-        if total_pct_count[hours] == 0:
+    def _fmt_portfolio_delta(delta_tuple, label):
+        delta, pct = delta_tuple
+        if delta is None:
             return f"[bold white]{label}:[/bold white] -"
-        avg = total_pct[hours] / total_pct_count[hours]
-        color = "green" if avg >= 0 else "red"
-        return f"[bold white]{label}:[/bold white] [{color}]{avg:+.1f}%[/{color}]"
-
-    def _fmt_total_delta(hours, label):
-        if total_delta_count[hours] == 0:
-            return f"[bold white]{label}:[/bold white] -"
-        d = total_delta[hours]
-        color = "green" if d >= 0 else "red"
-        return f"[bold white]{label}:[/bold white] [{color}]{d:+.4f}[/{color}]"
+        color = "green" if delta >= 0 else "red"
+        pct_str = f" ({pct:+.1f}%)" if pct is not None else ""
+        return f"[bold white]{label}:[/bold white] [{color}]{delta:+.4f}{pct_str}[/{color}]"
 
     summary = (
         f"[bold green]Total:[/bold green] {balance+total_stake_value:.2f} TAO    "
         f"[bold cyan]Available:[/bold cyan] {balance:.4f} TAO    "
         f"[bold cyan]Stake Value:[/bold cyan] {total_stake_value:.4f} TAO    "
-        f"{_fmt_change(1, 'H')}  {_fmt_change(24, 'D')}  {_fmt_change(168, 'W')}  {_fmt_change(720, 'M')}    "
-        f"{_fmt_total_delta(1, '\u0394 1h')}  {_fmt_total_delta(24, '\u0394 1d')}  {_fmt_total_delta(168, '\u0394 1w')}"
+        f"{_fmt_portfolio_delta(portfolio_delta_1h, '\u0394 1h')}  "
+        f"{_fmt_portfolio_delta(portfolio_delta_1d, '\u0394 1d')}  "
+        f"{_fmt_portfolio_delta(portfolio_delta_1w, '\u0394 1w')}"
     )
+    if proxy_balance is not None:
+        from bagbot import PROXY_LOW_BALANCE_WARN
+        if proxy_balance < PROXY_LOW_BALANCE_WARN:
+            summary += (
+                f"\n[bold red blink]⚠  PROXY WALLET LOW: {proxy_balance:.6f} TAO "
+                f"— ALL TRADES WILL FAIL. Top up the proxy wallet!  ⚠[/bold red blink]"
+            )
+        else:
+            summary += f"    [bold cyan]Proxy:[/bold cyan] {proxy_balance:.4f} TAO"
     console.print(Panel(summary, style="bold white"))
     console.print(table)
