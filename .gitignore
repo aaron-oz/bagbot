@@ -48,3 +48,6 @@ Thumbs.db
 settings_overrides.py
 bagbot_settings_overrides.py
 price_history.json
+insert_baselines.py
+trade_history.db
+staking.log
