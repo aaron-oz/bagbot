@@ -15,7 +15,7 @@ import printHelpers
 import price_history
 import trade_history
 from decimal import Decimal, getcontext
-getcontext().prec = 16 #Precision for price stuff
+getcontext().prec = 14 #Precision for price stuff
 
 # Keep enough free TAO to cover transaction fees.  Canonical constant lives
 # in bt_tools.network.executor.FEE_RESERVE_TAO — duplicated here because
@@ -368,7 +368,7 @@ class BittensorUtility():
                     self.subnet_grids[subnet_id]['sell_lower'] = self.subnet_grids[subnet_id]['sell']
                 else:
                     raise InvalidSettings(f'"sell_lower" missing for subnet {subnet_id} in bagbot_settings.SUBNET_SETTINGS')
-            if not self.subnet_grids[subnet_id].get('buy_upper'):
+            if self.subnet_grids[subnet_id].get('buy_upper') is None:
                 if self.subnet_grids[subnet_id].get('buy') is not None:
                     self.subnet_grids[subnet_id]['buy_upper'] = self.subnet_grids[subnet_id]['buy']
                 else:
@@ -564,6 +564,9 @@ class BittensorUtility():
 
                 logger.info(f'Tick {self.tick}: Printing table')
                 printHelpers.print_table_rich(self, console, self.current_stake_info, list(bagbot_settings.SUBNET_SETTINGS.keys()), self.stats, self.balance, self.subnet_grids, proxy_balance=self.proxy_balance)
+                subnet_params = '&var-target_subnets='.join(str(k) for k in self.subnet_grids)
+                taoflute_url = f"https://taoflute.com/d/5c216965-b99b-4d82-8b31-931bb3d71567/subnets-overview?orgId=1&var-target_subnets={subnet_params}"
+                print(f"\x1b]8;;{taoflute_url}\x1b\\Taoflute Portfolio\x1b]8;;\x1b\\")
                 if self.tick == 1 and not self.args.nocheck:
                     loop = asyncio.get_event_loop()
                     user_input = await loop.run_in_executor(None, input, "Should the bot proceed? (Y/N): ")
